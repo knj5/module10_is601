@@ -1,118 +1,78 @@
-# main.py
-
+"""FastAPI Calculator with PostgreSQL-backed secure user registration."""
+from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, field_validator  # Use @validator for Pydantic 1.x
-from fastapi.exceptions import RequestValidationError
-from app.operations import add, subtract, multiply, divide  # Ensure correct import path
-import uvicorn
-import logging
+from pydantic import BaseModel, Field, ConfigDict
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from app.database import get_engine, init_db
+from app.operations import add, subtract, multiply, divide
+from app.users import router as users_router
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    init_db()
+    yield
+    get_engine().dispose()
 
-app = FastAPI()
+app = FastAPI(title="Module 10 Secure Calculator", lifespan=lifespan)
+app.include_router(users_router)
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
-# Setup templates directory
-templates = Jinja2Templates(directory="templates")
-
-# Pydantic model for request data
 class OperationRequest(BaseModel):
-    a: float = Field(..., description="The first number")
-    b: float = Field(..., description="The second number")
+    model_config = ConfigDict(allow_inf_nan=False)
+    a: float = Field(description="The first number")
+    b: float = Field(description="The second number")
 
-    @field_validator('a', 'b')  # Correct decorator for Pydantic 1.x
-    def validate_numbers(cls, value):
-        if not isinstance(value, (int, float)):
-            raise ValueError('Both a and b must be numbers.')
-        return value
-
-# Pydantic model for successful response
 class OperationResponse(BaseModel):
-    result: float = Field(..., description="The result of the operation")
+    result: float
 
-# Pydantic model for error response
-class ErrorResponse(BaseModel):
-    error: str = Field(..., description="Error message")
-
-# Custom Exception Handlers
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    logger.error(f"HTTPException on {request.url.path}: {exc.detail}")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"error": exc.detail},
-    )
+async def http_error(request: Request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    # Extracting error messages
-    error_messages = "; ".join([f"{err['loc'][-1]}: {err['msg']}" for err in exc.errors()])
-    logger.error(f"ValidationError on {request.url.path}: {error_messages}")
-    return JSONResponse(
-        status_code=400,
-        content={"error": error_messages},
-    )
+async def validation_error(request: Request, exc: RequestValidationError):
+    # Do not echo submitted input (especially passwords) in a validation response.
+    message = "; ".join(f"{error['loc'][-1]}: {error['msg']}" for error in exc.errors())
+    status = 422 if request.url.path.startswith("/users") else 400
+    return JSONResponse(status_code=status, content={"error": message})
 
 @app.get("/")
-async def read_root(request: Request):
-    """
-    Serve the index.html template.
-    """
-    return templates.TemplateResponse("index.html", {"request": request})
+def read_root(request: Request):
+    return templates.TemplateResponse(request=request, name="index.html")
 
-@app.post("/add", response_model=OperationResponse, responses={400: {"model": ErrorResponse}})
-async def add_route(operation: OperationRequest):
-    """
-    Add two numbers.
-    """
+@app.get("/health")
+def health():
     try:
-        result = add(operation.a, operation.b)
-        return OperationResponse(result=result)
-    except Exception as e:
-        logger.error(f"Add Operation Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        with get_engine().connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
+    return {"status": "ok", "database": "connected"}
 
-@app.post("/subtract", response_model=OperationResponse, responses={400: {"model": ErrorResponse}})
-async def subtract_route(operation: OperationRequest):
-    """
-    Subtract two numbers.
-    """
-    try:
-        result = subtract(operation.a, operation.b)
-        return OperationResponse(result=result)
-    except Exception as e:
-        logger.error(f"Subtract Operation Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/add", response_model=OperationResponse)
+def add_route(operation: OperationRequest):
+    return {"result": add(operation.a, operation.b)}
 
-@app.post("/multiply", response_model=OperationResponse, responses={400: {"model": ErrorResponse}})
-async def multiply_route(operation: OperationRequest):
-    """
-    Multiply two numbers.
-    """
-    try:
-        result = multiply(operation.a, operation.b)
-        return OperationResponse(result=result)
-    except Exception as e:
-        logger.error(f"Multiply Operation Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/subtract", response_model=OperationResponse)
+def subtract_route(operation: OperationRequest):
+    return {"result": subtract(operation.a, operation.b)}
 
-@app.post("/divide", response_model=OperationResponse, responses={400: {"model": ErrorResponse}})
-async def divide_route(operation: OperationRequest):
-    """
-    Divide two numbers.
-    """
+@app.post("/multiply", response_model=OperationResponse)
+def multiply_route(operation: OperationRequest):
+    return {"result": multiply(operation.a, operation.b)}
+
+@app.post("/divide", response_model=OperationResponse)
+def divide_route(operation: OperationRequest):
     try:
-        result = divide(operation.a, operation.b)
-        return OperationResponse(result=result)
-    except ValueError as e:
-        logger.error(f"Divide Operation Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Divide Operation Internal Error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        return {"result": divide(operation.a, operation.b)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
