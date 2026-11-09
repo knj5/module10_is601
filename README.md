@@ -151,9 +151,9 @@ and validates a live PostgreSQL connection, with no curl dependency inside the i
 After a successful Docker Hub push:
 
 ```bash
-docker pull knj5/module10-calculator:latest
+docker pull --platform linux/amd64 knj5/module10-calculator:latest
 docker compose up -d db
-docker run --rm --network module10_is601_default \
+docker run --rm --platform linux/amd64 --network module10_is601_default \
   -p 127.0.0.1:8011:8000 \
   -e DATABASE_URL=postgresql+psycopg://postgres:module10local@db:5432/module10_db \
   knj5/module10-calculator:latest
@@ -161,8 +161,7 @@ docker run --rm --network module10_is601_default \
 
 Open http://localhost:8011/health in another window. These commands use the local
 classroom database. For a deployed environment, supply that environment's database
-URL instead. The published image targets linux/amd64, matching the Intel Mac and
-GitHub runner; other architectures may require emulation.
+URL instead. The published image targets linux/amd64, matching the GitHub runner. ARM Macs use Docker Desktop emulation with the platform flags above.
 
 ## Evidence for submission
 
